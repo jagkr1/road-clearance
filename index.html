@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Road Clearance Preview v0.5</title>
+  <title>Road Clearance Preview v0.6</title>
   <style>
     :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
     * { box-sizing: border-box; }
@@ -52,6 +52,12 @@
       <span class="units">cm</span>
     </div>
     <p class="subtle">Positive vertical Z offset. 450 cm = 4.50 m. The copy follows the original road geometry, not a constant absolute elevation.</p>
+    <label for="filterMode" style="margin-top:10px">Object filter (diagnostic)</label>
+    <select id="filterMode" style="width:100%;padding:9px;border:1px solid #b8c5d4;border-radius:6px;background:#fff;color:inherit">
+      <option value="source">Source model ID (test A)</option>
+      <option value="temporary">Temporary copy ID (test B)</option>
+    </select>
+    <p class="subtle">Try test A first. If unrelated objects are lifted, remove the preview and try test B. Neither test edits the source model.</p>
     <button class="primary full" id="show" disabled>Show clearance surface</button>
     <div class="actions">
       <button class="secondary" id="update" disabled>Update height</button>
@@ -63,7 +69,7 @@
     <p class="heading">Preview status</p>
     <p class="subtle"><span class="swatch"></span>Orange is the selected road surface at the clearance height. Only the selected road objects should appear elevated. If other objects appear elevated, the test has failed.</p>
     <div class="status" id="status">Not connected.</div>
-    <p class="subtle"><strong>Experimental visual test only.</strong> Intersections are not automatically detected or certified. Confirm that ONLY the selected road objects appear elevated; do not rely on this until verified. Temporary geometry is not written to the project.</p>
+    <p class="subtle"><strong>Experimental, not verified for clearance assessment.</strong> Visually verify that ONLY your chosen road objects are elevated. The viewer API cannot reliably enumerate objects of this temporary model, so no automatic visibility verification or clash test is performed. The source model is not modified.</p>
   </div>
 
   <details>
@@ -243,80 +249,51 @@
       await removePreview();
       const current = captured;
       const id = 'road-clearance-preview-' + sessionSuffix + '-' + (++nextId);
-      const offset = placementAt(current.basePlacement, mm);
+      const mode = $('filterMode').value;
+      const selectorModelId = mode === 'temporary' ? id : current.sourceId;
+      // Trimble's TrimbimModel.selector is documented to apply partial visibility.
+      // IMPORTANT: Provide it as part of the INITIAL addTrimbimModel call.
+      // Unlike v0.3-v0.5, do not address temporary objects via getObjects/setObjectState:
+      // the temporary TrimBIM is not reliably returned by that API.
+      const selector = { modelObjectIds: [{
+        modelId: selectorModelId,
+        objectRuntimeIds: current.runtimeIds,
+        recursive: true
+      }] };
+      const overlay = {
+        id,
+        placement: placementAt(current.basePlacement, mm),
+        visible: true,
+        fitToView: false,
+        clippable: true,
+        selector,
+        color: { r: 255, g: 88, b: 30, a: 170 }
+      };
       const candidates = [...new Set([current.sourceId, current.sourceModel?.id, current.sourceModel?.versionId].filter(Boolean))];
-      // v0.5: the copy must be *visible before* applying per-object hides.
-      // In v0.4 we made the model visible only AFTER per-object changes.
-      const overlay = { id, placement: offset, visible: true, fitToView: false, clippable: true };
-      message('Adding temporary model, then hiding unselected objects by ID…');
-      log('v0.5: sourceVersionId=' + current.sourceId + ', temporaryId=' + id);
-      log('Offset=' + mm + ' mm, selected runtime IDs=' + current.runtimeIds.join(','));
+      message('Creating temporary copy with selective visibility at load time…');
+      log('v0.6: filter=' + mode + ', selector.modelId=' + selectorModelId + ', source=' + current.sourceId + ', copy=' + id);
+      log('Selected IDs=' + current.runtimeIds.join(',') + ', offset=' + mm + ' mm');
+      log('Initial addTrimbimModel selector=' + JSON.stringify(selector));
       try {
         let result = await addFromReference(overlay, candidates);
         if (!result) result = await addFromLoadedFile(overlay, candidates);
-        if (!result) throw new Error('The viewer could not create a temporary TrimBIM copy. See the log.');
-
-        // Get the actual runtime IDs as understood by the *temporary model*.
-        // Only use the temp model ID; never hide or recolor source objects.
-        const allBefore = objectsInModel(await api.viewer.getObjects(tempSelector(id)), id);
-        const allIds = [...new Set(allBefore.map(o => o.id))];
-        const selectedLookup = objectsInModel(await api.viewer.getObjects(specificSelector(id, current.runtimeIds)), id);
-        const selectedSet = new Set(current.runtimeIds);
-        const selectedMatched = allIds.filter(x => selectedSet.has(x));
-        log('Before filtering: all temporary objects=' + allIds.length + ', selected lookup=' + selectedLookup.length + ', matching IDs=' + selectedMatched.length);
-        log('Initial runtime ID sample: ' + allIds.slice(0, 20).join(', '));
-        if (allIds.length === 0 || selectedMatched.length === 0 || selectedLookup.length === 0) {
-          throw new Error('Could not reliably enumerate the temporary copy and match selected runtime IDs. No visibility was changed in your original model.');
-        }
-        if (allIds.length > 20000) {
-          throw new Error('This copy contains more than 20,000 objects. Refusing to send a very large object-hiding operation.');
-        }
-        const unwanted = allIds.filter(x => !selectedSet.has(x));
-        log('Explicitly hiding ' + unwanted.length + ' unselected IDs (rather than hiding the whole model).');
-        let hiddenBatches = 0;
-        for (let i = 0; i < unwanted.length; i += 350) {
-          const batch = unwanted.slice(i, i + 350);
-          await api.viewer.setObjectState(specificSelector(id, batch), {visible: false});
-          hiddenBatches++;
-        }
-        log('Hide calls completed (' + hiddenBatches + ' batches).');
-
-        // Restoring the selected object state last deliberately does NOT
-        // re-enable the whole temporary model (which broke v0.3/v0.4).
-        await api.viewer.setObjectState(specificSelector(id, current.runtimeIds), {
-          visible: true,
-          color: {r:255, g:88, b:30, a:170}
-        });
-        log('Selected objects explicitly shown/recolored. No model-level visibility toggle after filtering.');
-
-        // Query the viewer for its object state. Some viewers don't report
-        // transient model visibility correctly, so zero is inconclusive, not
-        // evidence that everything was hidden.
-        let auditNote = '';
+        if (!result) throw new Error('Trimble could not create the filtered temporary copy; see technical log.');
+        activePreview = {
+          id, basePlacement: current.basePlacement, sourceId: current.sourceId,
+          mm, selectedCount: current.runtimeIds.length, mode
+        };
+        log('Temporary TrimBIM added using ' + result.method + '.');
         try {
-          const visibleRows = objectsInModel(await api.viewer.getObjects(tempSelector(id), {visible:true}), id);
-          const visibleIds = [...new Set(visibleRows.map(o => o.id))];
-          const nonSelectedVisible = visibleIds.filter(x => !selectedSet.has(x));
-          log('After filtering: reported visible=' + visibleIds.length + ', nonselected visible=' + nonSelectedVisible.length + '; IDs=' + visibleIds.slice(0, 20).join(','));
-          if (nonSelectedVisible.length) {
-            // The API reported that the entire-copy defect is still present.
-            throw new Error('Verification failed: the viewer still reports ' + nonSelectedVisible.length + ' unwanted objects visible.');
-          }
-          auditNote = visibleIds.length === 0
-            ? 'Viewer reports no visible IDs; inspect the geometry manually.'
-            : 'Viewer reports only the selected IDs visible; verify visually.';
-        } catch (e) {
-          // A positive verification failure must not leave a bad preview.
-          if (String(e?.message || '').startsWith('Verification failed:')) throw e;
-          log('Visibility audit unavailable: ' + (e?.message || e));
-          auditNote = 'Visibility audit unavailable; inspect visually.';
-        }
-        activePreview = {id, basePlacement: current.basePlacement, sourceId: current.sourceId,
-          mm, selectedCount: current.runtimeIds.length};
-        message('Preview at +' + (mm / 1000).toFixed(2) + ' m (' + result.method + '). ' + auditNote + ' Only selected road objects should be raised.', 'warn');
+          const trimbims = await api.viewer.getTrimbimModels();
+          const item = (Array.isArray(trimbims) ? trimbims : []).find(m => m.id === id);
+          log('getTrimbimModels: preview ' + (item ? 'listed' : 'not listed') +
+            (item ? ', selector=' + JSON.stringify(item.selector || null) + ', visible=' + String(item.visible) : ''));
+        } catch (e) { log('getTrimbimModels diagnostic unavailable: ' + (e?.message || e)); }
+        message('Test ' + (mode === 'source' ? 'A' : 'B') + ' loaded at +' + (mm/1000).toFixed(2) +
+          ' m. This is UNVERIFIED: inspect whether ONLY selected geometry is raised. If you see the whole model, remove the preview and try the other filter mode.', 'warn');
       } catch (e) {
         await cleanup(id);
-        log('Preview removed after error: ' + (e?.message || String(e)));
+        log('Removed preview after failure: ' + (e?.message || String(e)));
         throw e;
       }
     }
@@ -353,7 +330,7 @@
           if (eventName === 'viewer.onSelectionChanged') log('Viewer selection changed. Click “Use current 3D selection” to recapture.');
         }, 30000);
         $('selectionStatus').textContent = 'Connected. Click the road surface in the viewer, then use the button above.';
-        log('Trimble Connect Workspace API connected (v0.5).');
+        log('Trimble Connect Workspace API connected (v0.6).');
         message('Connected to Trimble Connect. Ready to capture a selection.', 'ok');
       } catch (e) {
         $('selectionStatus').textContent = 'Connection failed.';

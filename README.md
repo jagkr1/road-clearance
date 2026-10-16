@@ -1,16 +1,21 @@
-# Road Clearance Preview v0.5 — explicitly hide unwanted objects
+# Road Clearance Preview v0.6 — selector-at-load diagnostic
 
-Deploy these two root-level files to the existing `jagkr1/road-clearance` GitHub repository: `index.html`, `manifest.json`.
+**Experimental; not a clearance verification or clash test.**
 
-**Manifest URL in Trimble Connect:** `https://jagkr1.github.io/road-clearance/manifest.json?v=5`
+Version v0.5 could not enumerate temporary TrimBIM objects using `viewer.getObjects()`.
+Version v0.6 therefore avoids `getObjects()`/`setObjectState()` on the copy and sends Trimble's documented `TrimbimModel.selector` in the **initial** `addTrimbimModel()` call.
 
-## What changed since v0.4
+## Deployment
+- Replace repository-root `index.html` and `manifest.json` in `jagkr1/road-clearance`.
+- Commit and wait for GitHub Pages.
+- Re-register manifest `https://jagkr1.github.io/road-clearance/manifest.json?v=6`.
+- Confirm log starts `v0.6`.
 
-- Creates the temporary, elevated TrimBIM copy **visible from the start**.
-- Enumerates its runtime object IDs through `viewer.getObjects`.
-- Explicitly hides only IDs not in the selected road-object list using `viewer.setObjectState` in batches. This avoids the ambiguous "hide every object in the model" call.
-- Reveals and recolors the selected objects last; does not issue a full-model visible toggle afterwards.
-- Checks visibility when possible; removes the temporary copy if the API confirms unwanted geometry is visible. A 0-object result is treated as inconclusive, rather than success.
-- Adds a diagnostic button **Log currently selected object IDs**. If the copy still shows unwanted surfaces, click one of those surfaces, click this button, and send the resulting log. This tells us which runtime model ID the viewer actually selects.
+## Test
+1. Select only one road object in the original model, click **Use current 3D selection**.
+2. Enter 450 cm. Keep **Source model ID (test A)**, click **Show clearance surface**.
+3. Verify visually whether only selected geometry is elevated. Remove the preview before the next test.
+4. If the entire model is raised, choose **Temporary copy ID (test B)** and repeat.
+5. Send Technical log AND tell us which test displays only selected geometry, if either.
 
-**Caveats:** This version is an API compatibility experiment, not proven in Trimble Connect for Browser. Do not rely on its visual clearance result unless the original remains unchanged and **only the selected objects** are offset. It does not calculate clashes or clearance compliance. Temporary copies are removed via `removeTrimbimModel`, not saved to the project.
+This is a visibility experiment. It doesn't compute the actual minimum distance to a tunnel roof. The temporary preview is removed through `removeTrimbimModel()` and does not change the original model's visibility or placement.
