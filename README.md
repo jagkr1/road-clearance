@@ -1,4 +1,4 @@
-# Road Clearance Preview — Trimble Connect (experimental v0.2)
+# Road Clearance Preview — Trimble Connect (experimental v0.3)
 
 Browser-only Trimble Connect 3D Viewer extension to preview selected road-surface objects at a specified vertical offset. No project geometry is permanently changed. Visual inspection only; no automatic clearance or clash calculation.
 
@@ -24,19 +24,20 @@ Repository: `https://github.com/jagkr1/road-clearance`
 ## Experimental limitations
 
 - The extension relies on Trimble's temporary TrimBIM model API and may not work on all loaded source model types. The documented temporary blob size limit is 10 MB.
-- Check that the preview contains **only** selected objects; if other objects are included, it is not a valid clearance display.
+- Check that the preview contains **only** selected objects; if other objects are included, it is not a valid clearance display. Trimble's partial-visibility semantics can vary by viewer version and model structure.
 - This is a vertical Z offset, not a guaranteed minimum clearance, dynamic vehicle envelope, or clash detector.
 - If it fails, expand **Technical log** in the extension and share the messages so we can diagnose the issue.
 
-## Changes in v0.2
+## Changes in v0.3
 
-- Fixed the browser SDK global: `TrimbleConnectWorkspace.connect(...)` instead of `WorkspaceAPI.connect(...)`.
-- Corrected `getLoadedModel` handling: the API returns a `File` object with optional `.blob`, not a Blob itself.
-- Increased connection timeout to 30 seconds and added a successful-connection log entry.
-- Increased the `index.html` cache-busting parameter in `manifest.json` to `?v=2`.
-
-The temporary-model reuse approach is still experimental: this fix addresses the connection failure, not proof that a surface can be duplicated from the existing model.
+- The previous version duplicated the entire road model at the offset height, with only selected objects recolored.
+- Now the temporary copy is first loaded completely **hidden**, and then the extension calls the partial-visibility selector to show and color **only the selected road objects**.
+- This is an API-based approach that needs testing in your actual Trimble Connect 3D Viewer. If other objects still appear elevated, do not treat the preview as a valid clearance surface; share the technical log and a screenshot.
+- The original project model remains unchanged. This still does not perform automatic collision or minimum-clearance calculations.
+- Updated the cache-busting query parameter in `manifest.json` to `?v=3`.
 
 ## Updating
 
-When changing `index.html`, increment the cache-busting query in `manifest.json`, such as `?v=1` to `?v=2`, then commit both files.
+When changing `index.html`, increment the cache-busting query in `manifest.json`, such as `?v=2` to `?v=3`, then commit both files.
+
+Manifest registration/cache-busting URL: `https://jagkr1.github.io/road-clearance/manifest.json?v=3`

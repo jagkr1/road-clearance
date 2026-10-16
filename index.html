@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Road Clearance Preview v0.2</title>
+  <title>Road Clearance Preview v0.3</title>
   <style>
     :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
     * { box-sizing: border-box; }
@@ -61,9 +61,9 @@
 
   <div class="card">
     <p class="heading">Preview status</p>
-    <p class="subtle"><span class="swatch"></span>Orange is the temporary clearance surface.</p>
+    <p class="subtle"><span class="swatch"></span>Orange is the selected road surface at the clearance height. Other objects should remain only at their original elevations.</p>
     <div class="status" id="status">Not connected.</div>
-    <p class="subtle"><strong>Visual test only.</strong> Intersections are not automatically detected or certified. Verify that ONLY the intended road surface appears offset. Temporary geometry is not written to the project.</p>
+    <p class="subtle"><strong>Visual test only.</strong> Intersections are not automatically detected or certified. Confirm that ONLY the selected road objects appear elevated; do not rely on this until verified. Temporary geometry is not written to the project.</p>
   </div>
 
   <details>
@@ -224,20 +224,24 @@
       await removePreview();
       const current = captured;
       const id = 'road-clearance-preview-' + sessionSuffix + '-' + (++nextId);
-      const selector = {
-        modelObjectIds: [{ modelId: id, objectRuntimeIds: current.runtimeIds, recursive: true }]
-      };
+      // Phase 1: create the offset copy with every object hidden.
+      // The v0.2 implementation created the copy visible and used selector to
+      // color the selection, which left all the unselected objects visible.
       const overlay = {
         id,
         placement: placementAt(current.basePlacement, mm),
-        selector,
-        color: { r: 255, g: 88, b: 30, a: 170 },
-        visible: true,
+        visible: false,
         fitToView: false,
         clippable: true
       };
+      // Phase 2 (after adding the model): reveal only the selected runtime IDs
+      // in this new temporary model. It is crucial that modelId is the COPY id,
+      // not the source file versionId, otherwise the original may be affected.
+      const selector = {
+        modelObjectIds: [{ modelId: id, objectRuntimeIds: current.runtimeIds, recursive: true }]
+      };
       const candidates = [...new Set([current.sourceId, current.sourceModel?.id, current.sourceModel?.versionId].filter(Boolean))];
-      message('Trying to build a temporary clearance preview…');
+      message('Creating a hidden temporary copy, then revealing only the selected road objects…');
       log('Offset=' + mm + ' mm, previewId=' + id);
       log('Placement=' + JSON.stringify(overlay.placement));
       // Fast path: ask Trimble to reuse the loaded TrimBIM without copying bytes.
@@ -248,11 +252,29 @@
         await cleanup(id);
         throw new Error('The viewer could not create a copy from this selected model. See the technical log. This can occur when the source is not reusable TrimBIM, its loaded file exceeds 10 MB, or its geometry is unavailable to extensions. The original model is unchanged.');
       }
+      // Reveal + color ONLY selected objects. This is an incremental
+      // visibility update to the already-loaded hidden overlay (no trb blob).
+      // Trimble describes TrimbimModel.selector as a partial-visibility filter.
+      try {
+        log('Revealing ' + current.runtimeIds.length + ' selected object(s) in hidden overlay…');
+        const revealResult = await api.viewer.addTrimbimModel({
+          id,
+          selector,
+          visible: true,
+          color: { r: 255, g: 88, b: 30, a: 170 }
+        });
+        if (!successful(revealResult)) {
+          throw new Error('Viewer rejected the selective visibility update: ' + JSON.stringify(revealResult));
+        }
+      } catch (e) {
+        await cleanup(id);
+        throw new Error('Could not reveal only selected objects: ' + (e?.message || String(e)));
+      }
       activePreview = {
         id, basePlacement: current.basePlacement, sourceId: current.sourceId,
         mm, selectedCount: current.runtimeIds.length
       };
-      message('Preview added at +' + (mm / 1000).toFixed(2) + ' m (' + result.method + '). Confirm visually that only your selected road surface is elevated. No automated clash check is performed.', 'ok');
+      message('Preview at +' + (mm / 1000).toFixed(2) + ' m (' + result.method + '). Only the selected objects were requested to be shown in the elevated copy. Confirm visually that no other objects are lifted. No automatic clash test is performed.', 'ok');
     }
     async function updateHeight() {
       if (!activePreview) throw new Error('No active preview to update.');
@@ -279,7 +301,7 @@
           if (eventName === 'viewer.onSelectionChanged') log('Viewer selection changed. Click “Use current 3D selection” to recapture.');
         }, 30000);
         $('selectionStatus').textContent = 'Connected. Click the road surface in the viewer, then use the button above.';
-        log('Trimble Connect Workspace API connected (v0.2).');
+        log('Trimble Connect Workspace API connected (v0.3).');
         message('Connected to Trimble Connect. Ready to capture a selection.', 'ok');
       } catch (e) {
         $('selectionStatus').textContent = 'Connection failed.';
