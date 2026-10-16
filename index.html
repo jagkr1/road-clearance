@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Road Clearance Preview</title>
+  <title>Road Clearance Preview v0.2</title>
   <style>
     :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
     * { box-sizing: border-box; }
@@ -189,19 +189,26 @@
       for (const id of sourceIds) {
         try {
           log('Trying loaded model file: ' + id);
-          const file = await api.viewer.getLoadedModel(id);
-          if (!(file instanceof Blob)) { log('No Blob returned for ' + id); continue; }
-          log('Loaded file: ' + (file.name || '[unnamed]') + ', ' + file.size + ' bytes');
-          // addTrimbimModel explicitly limits TrimBIM binary content to 10 MB.
-          if (file.size > 10 * 1024 * 1024) {
+          const loadedFile = await api.viewer.getLoadedModel(id);
+          // Per Trimble's API, getLoadedModel returns a File object whose `blob` is optional.
+          const blob = loadedFile?.blob;
+          const fileName = loadedFile?.name || '';
+          if (!blob || !(blob instanceof Blob || typeof blob === 'string')) {
+            log('No usable model content returned for ' + id + ' (file=' + (fileName || 'unknown') + ').');
+            continue;
+          }
+          const bytes = blob instanceof Blob ? blob.size : Math.ceil(blob.length * 3 / 4);
+          log('Loaded file: ' + (fileName || '[unnamed]') + ', approx. ' + bytes + ' bytes');
+          // addTrimbimModel only accepts TrimBIM data and has a 10 MB limit.
+          if (bytes > 10 * 1024 * 1024) {
             log('Skipping: larger than the documented 10 MB TrimBIM limit.');
             continue;
           }
-          if (file.name && !file.name.toLowerCase().endsWith('.trb')) {
-            log('Skipping: received a ' + file.name.split('.').pop() + ' file instead of a .trb file.');
+          if (!fileName.toLowerCase().endsWith('.trb')) {
+            log('Skipping: loaded file is not a .trb TrimBIM model.');
             continue;
           }
-          const result = await api.viewer.addTrimbimModel({ ...overlay, trbBlob: file });
+          const result = await api.viewer.addTrimbimModel({ ...overlay, trbBlob: blob });
           if (successful(result)) return { method: 'getLoadedModel', sourceId: id };
           log('File addition was not accepted: ' + JSON.stringify(result));
         } catch (e) {
@@ -267,11 +274,12 @@
     });
     (async () => {
       try {
-        if (!window.WorkspaceAPI?.connect) throw new Error('Trimble Workspace API script did not load.');
-        api = await window.WorkspaceAPI.connect(window.parent, (eventName, data) => {
+        if (!window.TrimbleConnectWorkspace?.connect) throw new Error('Trimble Connect Workspace API was not available. Check that the SDK script loads in the browser.');
+        api = await window.TrimbleConnectWorkspace.connect(window.parent, (eventName, data) => {
           if (eventName === 'viewer.onSelectionChanged') log('Viewer selection changed. Click “Use current 3D selection” to recapture.');
-        });
+        }, 30000);
         $('selectionStatus').textContent = 'Connected. Click the road surface in the viewer, then use the button above.';
+        log('Trimble Connect Workspace API connected (v0.2).');
         message('Connected to Trimble Connect. Ready to capture a selection.', 'ok');
       } catch (e) {
         $('selectionStatus').textContent = 'Connection failed.';
