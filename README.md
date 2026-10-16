@@ -1,21 +1,21 @@
-# Road Clearance Preview v0.6 — selector-at-load diagnostic
+# Road Clearance Preview v0.7 — single-object visibility diagnostic
 
-**Experimental; not a clearance verification or clash test.**
+## Installation
 
-Version v0.5 could not enumerate temporary TrimBIM objects using `viewer.getObjects()`.
-Version v0.6 therefore avoids `getObjects()`/`setObjectState()` on the copy and sends Trimble's documented `TrimbimModel.selector` in the **initial** `addTrimbimModel()` call.
+Replace the root `index.html` and `manifest.json` in GitHub repository `jagkr1/road-clearance`; commit and ensure GitHub Pages has deployed the changes. Then open Trimble Connect using this capability manifest URL:
 
-## Deployment
-- Replace repository-root `index.html` and `manifest.json` in `jagkr1/road-clearance`.
-- Commit and wait for GitHub Pages.
-- Re-register manifest `https://jagkr1.github.io/road-clearance/manifest.json?v=6`.
-- Confirm log starts `v0.6`.
+`https://jagkr1.github.io/road-clearance/manifest.json?v=7`
 
-## Test
-1. Select only one road object in the original model, click **Use current 3D selection**.
-2. Enter 450 cm. Keep **Source model ID (test A)**, click **Show clearance surface**.
-3. Verify visually whether only selected geometry is elevated. Remove the preview before the next test.
-4. If the entire model is raised, choose **Temporary copy ID (test B)** and repeat.
-5. Send Technical log AND tell us which test displays only selected geometry, if either.
+The manifest HTML URL should end in `index.html?v=7`.
 
-This is a visibility experiment. It doesn't compute the actual minimum distance to a tunnel roof. The temporary preview is removed through `removeTrimbimModel()` and does not change the original model's visibility or placement.
+## Test procedure
+
+1. Select the road surface in the **original road model** and click **Use current 3D selection**.
+2. Set an offset (e.g., 450 cm) and keep **Temporary copy ID (recommended, test B)** selected.
+3. Click **Show clearance surface**. The current version will likely still duplicate the entire road model.
+4. Select ONE unwanted object in the **elevated copy**, not the original model.
+5. Click **Hide selected object in offset copy (test)**.
+6. Report whether the chosen unwanted offset object actually disappears. If not, copy the new `v0.7 single-object HIDE` lines from Technical log.
+7. Optionally click **Restore last test-hidden object**. Removing the preview removes the test copy.
+
+The hide button explicitly verifies that the selected model ID matches the extension's current temporary copy. It does not make visibility changes to the source model. A resolved API call is *not* confirmation of successful hiding. No automatic clash or clearance calculation is performed.
