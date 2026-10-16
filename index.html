@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Road Clearance Preview v0.3</title>
+  <title>Road Clearance Preview v0.4</title>
   <style>
     :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
     * { box-sizing: border-box; }
@@ -61,9 +61,9 @@
 
   <div class="card">
     <p class="heading">Preview status</p>
-    <p class="subtle"><span class="swatch"></span>Orange is the selected road surface at the clearance height. Other objects should remain only at their original elevations.</p>
+    <p class="subtle"><span class="swatch"></span>Orange is the selected road surface at the clearance height. Only the selected road objects should appear elevated. If other objects appear elevated, the test has failed.</p>
     <div class="status" id="status">Not connected.</div>
-    <p class="subtle"><strong>Visual test only.</strong> Intersections are not automatically detected or certified. Confirm that ONLY the selected road objects appear elevated; do not rely on this until verified. Temporary geometry is not written to the project.</p>
+    <p class="subtle"><strong>Experimental visual test only.</strong> Intersections are not automatically detected or certified. Confirm that ONLY the selected road objects appear elevated; do not rely on this until verified. Temporary geometry is not written to the project.</p>
   </div>
 
   <details>
@@ -218,63 +218,83 @@
       }
       return null;
     }
+    function objectsInModel(groups, id) {
+      return (Array.isArray(groups) ? groups : [])
+        .filter(g => g?.modelId === id && Array.isArray(g.objects))
+        .flatMap(g => g.objects)
+        .filter(o => Number.isInteger(o?.id));
+    }
+    function tempSelector(id, ids = undefined) {
+      // Use ONLY this unique temporary TrimBIM id, never the original versionId.
+      // Leaving objectRuntimeIds undefined means all objects in THIS temporary copy.
+      return { modelObjectIds: [{ modelId: id, ...(ids ? {objectRuntimeIds: ids, recursive: true} : {}) }] };
+    }
     async function showPreview() {
       if (!captured) throw new Error('First capture a road surface selection.');
       const mm = heightMm();
       await removePreview();
       const current = captured;
       const id = 'road-clearance-preview-' + sessionSuffix + '-' + (++nextId);
-      // Phase 1: create the offset copy with every object hidden.
-      // The v0.2 implementation created the copy visible and used selector to
-      // color the selection, which left all the unselected objects visible.
-      const overlay = {
-        id,
-        placement: placementAt(current.basePlacement, mm),
-        visible: false,
-        fitToView: false,
-        clippable: true
-      };
-      // Phase 2 (after adding the model): reveal only the selected runtime IDs
-      // in this new temporary model. It is crucial that modelId is the COPY id,
-      // not the source file versionId, otherwise the original may be affected.
-      const selector = {
-        modelObjectIds: [{ modelId: id, objectRuntimeIds: current.runtimeIds, recursive: true }]
-      };
+      const offset = placementAt(current.basePlacement, mm);
       const candidates = [...new Set([current.sourceId, current.sourceModel?.id, current.sourceModel?.versionId].filter(Boolean))];
-      message('Creating a hidden temporary copy, then revealing only the selected road objects…');
-      log('Offset=' + mm + ' mm, previewId=' + id);
-      log('Placement=' + JSON.stringify(overlay.placement));
-      // Fast path: ask Trimble to reuse the loaded TrimBIM without copying bytes.
-      let result = await addFromReference(overlay, candidates);
-      // Fallback: a small, locally available TrimBIM file can be passed directly.
-      if (!result) result = await addFromLoadedFile(overlay, candidates);
-      if (!result) {
-        await cleanup(id);
-        throw new Error('The viewer could not create a copy from this selected model. See the technical log. This can occur when the source is not reusable TrimBIM, its loaded file exceeds 10 MB, or its geometry is unavailable to extensions. The original model is unchanged.');
-      }
-      // Reveal + color ONLY selected objects. This is an incremental
-      // visibility update to the already-loaded hidden overlay (no trb blob).
-      // Trimble describes TrimbimModel.selector as a partial-visibility filter.
+      // Keep the copy hidden while configuring object visibility.
+      const overlay = { id, placement: offset, visible: false, fitToView: false, clippable: true };
+      message('Adding temporary model, then testing object-level visibility…');
+      log('v0.4: sourceVersionId=' + current.sourceId + ', temporaryId=' + id);
+      log('Offset=' + mm + ' mm, selected runtime IDs=' + current.runtimeIds.length);
+      let method;
       try {
-        log('Revealing ' + current.runtimeIds.length + ' selected object(s) in hidden overlay…');
-        const revealResult = await api.viewer.addTrimbimModel({
-          id,
-          selector,
+        // Reuse the cached source TrimBIM, or fall back to a small .trb file.
+        let result = await addFromReference(overlay, candidates);
+        if (!result) result = await addFromLoadedFile(overlay, candidates);
+        if (!result) throw new Error('The viewer could not create a temporary TrimBIM copy. See the log.');
+        method = result.method;
+
+        // Safety gate: verify that the viewer can individually address objects in
+        // the temporary model ID. A model-level visible toggle alone isn't enough.
+        const selectedSelector = tempSelector(id, current.runtimeIds);
+        const selectedLookup = await api.viewer.getObjects(selectedSelector);
+        const addressed = objectsInModel(selectedLookup, id);
+        log('Temporary-object lookup: found ' + addressed.length + ' object(s) for selected IDs.');
+        if (!addressed.length) {
+          throw new Error('The viewer did not expose selected objects under the temporary model ID. The preview was removed; changing visibility could otherwise affect the wrong model. Please share the technical log.');
+        }
+
+        // Explicit object-level state commands. Unlike addTrimbimModel.visible,
+        // this targets *only* the copy and controls individual runtime objects.
+        await api.viewer.setObjectState(tempSelector(id), { visible: false });
+        log('setObjectState: hid all temporary-copy objects.');
+        await api.viewer.setObjectState(selectedSelector, {
           visible: true,
           color: { r: 255, g: 88, b: 30, a: 170 }
         });
-        if (!successful(revealResult)) {
-          throw new Error('Viewer rejected the selective visibility update: ' + JSON.stringify(revealResult));
+        log('setObjectState: revealed/recolored selected temporary-copy objects.');
+        const enabled = await api.viewer.addTrimbimModel({ id, visible: true });
+        if (!successful(enabled)) throw new Error('The viewer rejected the final temporary-model visibility change.');
+
+        // Ask the viewer to report visibility so obvious unfiltered copies are
+        // rejected automatically. This is not a geometric clash validation.
+        const allRows = await api.viewer.getObjects(tempSelector(id));
+        const visRows = await api.viewer.getObjects(tempSelector(id), { visible: true });
+        const total = objectsInModel(allRows, id);
+        const visible = objectsInModel(visRows, id);
+        log('Visibility audit: total objects=' + total.length + ', visible=' + visible.length + ', explicitly selected=' + current.runtimeIds.length);
+        if (total.length > current.runtimeIds.length && visible.length === total.length) {
+          throw new Error('All objects in the temporary model still appear visible. The preview was removed automatically; the viewer did not retain object-level visibility. Please share the technical log.');
         }
+        if (total.length > 0 && visible.length === 0) {
+          throw new Error('No objects in the temporary model are visible after filtering. The preview was removed. Please share the technical log.');
+        }
+        activePreview = {
+          id, basePlacement: current.basePlacement, sourceId: current.sourceId,
+          mm, selectedCount: current.runtimeIds.length
+        };
+        message('Temporary preview added at +' + (mm / 1000).toFixed(2) + ' m (' + method + '). Visibility audit: ' + visible.length + '/' + total.length + ' objects visible. Check visually that ONLY the selected road objects are raised.', 'ok');
       } catch (e) {
         await cleanup(id);
-        throw new Error('Could not reveal only selected objects: ' + (e?.message || String(e)));
+        log('Filtered preview removed after error: ' + (e?.message || String(e)));
+        throw e;
       }
-      activePreview = {
-        id, basePlacement: current.basePlacement, sourceId: current.sourceId,
-        mm, selectedCount: current.runtimeIds.length
-      };
-      message('Preview at +' + (mm / 1000).toFixed(2) + ' m (' + result.method + '). Only the selected objects were requested to be shown in the elevated copy. Confirm visually that no other objects are lifted. No automatic clash test is performed.', 'ok');
     }
     async function updateHeight() {
       if (!activePreview) throw new Error('No active preview to update.');
@@ -301,7 +321,7 @@
           if (eventName === 'viewer.onSelectionChanged') log('Viewer selection changed. Click “Use current 3D selection” to recapture.');
         }, 30000);
         $('selectionStatus').textContent = 'Connected. Click the road surface in the viewer, then use the button above.';
-        log('Trimble Connect Workspace API connected (v0.3).');
+        log('Trimble Connect Workspace API connected (v0.4).');
         message('Connected to Trimble Connect. Ready to capture a selection.', 'ok');
       } catch (e) {
         $('selectionStatus').textContent = 'Connection failed.';
