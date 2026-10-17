@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Road Clearance Preview v0.7</title>
+  <title>Road Clearance Preview v0.8</title>
   <style>
     :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
     * { box-sizing: border-box; }
@@ -52,12 +52,7 @@
       <span class="units">cm</span>
     </div>
     <p class="subtle">Positive vertical Z offset. 450 cm = 4.50 m. The copy follows the original road geometry, not a constant absolute elevation.</p>
-    <label for="filterMode" style="margin-top:10px">Object filter (diagnostic)</label>
-    <select id="filterMode" style="width:100%;padding:9px;border:1px solid #b8c5d4;border-radius:6px;background:#fff;color:inherit">
-      <option value="temporary">Temporary copy ID (recommended, test B)</option>
-      <option value="source">Source model ID (comparison only, test A)</option>
-    </select>
-    <p class="subtle">Test B targets the selected object's copy ID; it applies colour selectively, but visibility has not worked. This version diagnoses whether individual temporary objects can be hidden programmatically. It never changes the original model's visibility.</p>
+    <p class="subtle">v0.8 finds the road model’s object IDs and hides all unselected objects <strong>in the temporary copy only</strong>. The original model is never hidden or moved.</p>
     <button class="primary full" id="show" disabled>Show clearance surface</button>
     <div class="actions">
       <button class="secondary" id="update" disabled>Update height</button>
@@ -67,17 +62,17 @@
 
   <div class="card">
     <p class="heading">Preview status</p>
-    <p class="subtle"><span class="swatch"></span>Orange is the selected road surface at the clearance height. Only the selected road objects should appear elevated. If other objects appear elevated, the test has failed.</p>
+    <p class="subtle"><span class="swatch"></span>Selected surfaces are highlighted orange. Any additional raised geometry means the visibility filter is incomplete.</p>
     <div class="status" id="status">Not connected.</div>
-    <p class="subtle"><strong>Experimental, not verified for clearance assessment.</strong> All offset objects may remain visible. This version tests programmatic hiding of one unwanted object. A resolved API call does not prove a visibility change. The source model is not modified.</p>
+    <p class="subtle"><strong>Experimental preview:</strong> This is a visual aid, not a minimum-clearance measurement or a certified clash check. Verify that ONLY your selected geometry is raised before using it for design review.</p>
   </div>
 
   <div class="card">
-    <p class="heading">3 · Object visibility diagnostic (v0.7)</p>
-    <p class="subtle">After creating the offset copy, select ONE unwanted object <strong>in the elevated copy</strong> in the 3D viewer, then use the button below. It will send exactly one visibility command to that temporary model ID and object runtime ID. Look for the selected object disappearing. If it remains visible, please report that result.</p>
+    <p class="heading">3 · Optional single-object test (v0.8)</p>
+    <p class="subtle">Only needed if the automatic filter leaves unwanted geometry raised: select one unwanted elevated object and click the button below. This sends the same hide command that worked in v0.7.</p>
     <button class="secondary full" id="hideSelected" disabled>Hide selected object in offset copy (test)</button>
     <button class="secondary full" id="restoreHidden" disabled style="margin-top:8px">Restore last test-hidden object</button>
-    <div class="status" id="diagnosticStatus">Create an offset preview first, then select an unwanted object in the preview.</div>
+    <div class="status" id="diagnosticStatus">Create an offset preview first. This test is optional.</div>
   </div>
 
   <details>
@@ -154,7 +149,7 @@
       const id = activePreview.id;
       activePreview = null;
       lastHidden = null;
-      $('diagnosticStatus').textContent = 'Create an offset preview first, then select an unwanted object in the preview.';
+      $('diagnosticStatus').textContent = 'Create an offset preview first. This test is optional.';
       await cleanup(id);
       message('Temporary clearance preview removed.', 'ok');
     }
@@ -245,10 +240,60 @@
         .flatMap(g => g.objects)
         .filter(o => Number.isInteger(o?.id));
     }
-    function tempSelector(id, ids = undefined) {
-      // Use ONLY this unique temporary TrimBIM id, never the original versionId.
-      // Leaving objectRuntimeIds undefined means all objects in THIS temporary copy.
-      return { modelObjectIds: [{ modelId: id, ...(ids ? {objectRuntimeIds: ids, recursive: true} : {}) }] };
+    // Enumerating via getObjects(temporaryModelId) returned 0 objects in v0.5,
+    // although these objects were visually present and individually hideable.
+    // In v0.8, enumerate the ORIGINAL model (READ ONLY), but only send changes
+    // to the unique TEMPORARY model id.
+    async function enumerateSource(current) {
+      const source = current.sourceId;
+      const result = await api.viewer.getObjects({modelObjectIds:[{modelId:source}]});
+      const rows = objectsInModel(result, source);
+      const allIds = [...new Set(rows.map(o => o.id))];
+      const selectedIds = current.runtimeIds.filter(Number.isInteger);
+      const missing = selectedIds.filter(id => !allIds.includes(id));
+      log('v0.8 source enumeration: model=' + source + ', groups=' + (Array.isArray(result) ? result.length : 'non-array') +
+          ', source objects=' + allIds.length + ', sample=' + allIds.slice(0, 20).join(','));
+      if (!allIds.length) {
+        throw new Error('Source-model enumeration returned zero objects. The preview was not created. Send the technical log.');
+      }
+      if (missing.length) {
+        throw new Error('Selected object IDs not found in source enumeration: ' + missing.slice(0, 15).join(',') +
+          '. The preview was not created, to avoid hiding your selected geometry.');
+      }
+      if (allIds.length > 20000) {
+        throw new Error('This model has ' + allIds.length + ' reported objects (>20,000). Automatic hiding is disabled for this large model to avoid overloading the viewer.');
+      }
+      const keep = new Set(selectedIds);
+      // Protect any descendants (such as surface components under a selected group)
+      // and parents (so hiding a container cannot accidentally hide the selection).
+      try {
+        const children = await api.viewer.getHierarchyChildren(source, selectedIds, undefined, true);
+        for (const item of (Array.isArray(children) ? children : [])) {
+          if (Number.isInteger(item?.id)) keep.add(item.id);
+        }
+        log('Selected hierarchy descendants returned: ' + (Array.isArray(children) ? children.length : 'non-array'));
+      } catch (e) { log('Hierarchy children unavailable; keeping selected IDs only. ' + (e?.message || e)); }
+      try {
+        const parents = await api.viewer.getHierarchyParents(source, selectedIds, undefined, true);
+        for (const item of (Array.isArray(parents) ? parents : [])) {
+          if (Number.isInteger(item?.id)) keep.add(item.id);
+        }
+        log('Selected hierarchy ancestors returned: ' + (Array.isArray(parents) ? parents.length : 'non-array'));
+      } catch (e) { log('Hierarchy parents unavailable; keeping selected IDs only. ' + (e?.message || e)); }
+      const unwanted = allIds.filter(id => !keep.has(id));
+      log('v0.8 plan: keep=' + keep.size + ', unselected object IDs to hide=' + unwanted.length);
+      return { allIds, keepIds:[...keep], unwanted };
+    }
+    async function hideUnselectedInCopy(copyId, ids) {
+      if (!copyId.startsWith('road-clearance-preview-' )) throw new Error('Refusing to hide: invalid temporary model ID.');
+      const batchSize = 100;
+      for (let i = 0; i < ids.length; i += batchSize) {
+        const batch = ids.slice(i, i + batchSize);
+        await api.viewer.setObjectState(specificSelector(copyId, batch), {visible:false});
+        if (i === 0 || i + batchSize >= ids.length) {
+          log('v0.8 hide request: copy=' + copyId + ', processed=' + Math.min(i + batchSize, ids.length) + '/' + ids.length);
+        }
+      }
     }
     // The single-object selectors in this preview must never target the source
     // model, since the user must be able to remove the overlay without any
@@ -261,18 +306,13 @@
       const mm = heightMm();
       await removePreview();
       const current = captured;
+      // Fail before creating temporary geometry when source enumeration is unavailable.
+      message('Reading object IDs from the original road model (read-only)…');
+      const inventory = await enumerateSource(current);
       const id = 'road-clearance-preview-' + sessionSuffix + '-' + (++nextId);
-      const mode = $('filterMode').value;
-      const selectorModelId = mode === 'temporary' ? id : current.sourceId;
-      // Trimble's TrimbimModel.selector is documented to apply partial visibility.
-      // IMPORTANT: Provide it as part of the INITIAL addTrimbimModel call.
-      // Unlike v0.3-v0.5, do not address temporary objects via getObjects/setObjectState:
-      // the temporary TrimBIM is not reliably returned by that API.
-      const selector = { modelObjectIds: [{
-        modelId: selectorModelId,
-        objectRuntimeIds: current.runtimeIds,
-        recursive: true
-      }] };
+      const selector = {modelObjectIds:[{modelId:id, objectRuntimeIds:current.runtimeIds, recursive:true}]};
+      // The temporary ID correctly restricted the orange colouring in v0.6/v0.7,
+      // but did NOT restrict visibility. We explicitly hide every unwanted ID below.
       const overlay = {
         id,
         placement: placementAt(current.basePlacement, mm),
@@ -280,35 +320,31 @@
         fitToView: false,
         clippable: true,
         selector,
-        color: { r: 255, g: 88, b: 30, a: 170 }
+        color: {r:255, g:88, b:30, a:170}
       };
       const candidates = [...new Set([current.sourceId, current.sourceModel?.id, current.sourceModel?.versionId].filter(Boolean))];
-      message('Creating temporary copy with selective visibility at load time…');
-      log('v0.7: filter=' + mode + ', selector.modelId=' + selectorModelId + ', source=' + current.sourceId + ', copy=' + id);
-      log('Selected IDs=' + current.runtimeIds.join(',') + ', offset=' + mm + ' mm');
-      log('Initial addTrimbimModel selector=' + JSON.stringify(selector));
+      log('v0.8 copy=' + id + ', source=' + current.sourceId + ', selected=' + current.runtimeIds.join(',') +
+        ', offset=' + mm + ' mm, unwanted IDs=' + inventory.unwanted.length);
+      message('Creating raised copy and hiding ' + inventory.unwanted.length + ' unselected objects…');
       try {
         let result = await addFromReference(overlay, candidates);
         if (!result) result = await addFromLoadedFile(overlay, candidates);
-        if (!result) throw new Error('Trimble could not create the filtered temporary copy; see technical log.');
+        if (!result) throw new Error('Trimble could not create the temporary copy. See technical log.');
+        log('Temporary model added using ' + result.method + '. Filtering only modelId=' + id);
+        await hideUnselectedInCopy(id, inventory.unwanted);
+        // No model-wide visibility or "show selected" command here. Both could
+        // undo successful object-specific hiding on the temporary copy.
         activePreview = {
           id, basePlacement: current.basePlacement, sourceId: current.sourceId,
-          mm, selectedCount: current.runtimeIds.length, mode
+          mm, selectedCount: current.runtimeIds.length, hiddenIds: inventory.unwanted
         };
         lastHidden = null;
-        $('diagnosticStatus').textContent = 'Click an unwanted object in the elevated copy, then click Hide selected object in offset copy (test).';
-        log('Temporary TrimBIM added using ' + result.method + '.');
-        try {
-          const trimbims = await api.viewer.getTrimbimModels();
-          const item = (Array.isArray(trimbims) ? trimbims : []).find(m => m.id === id);
-          log('getTrimbimModels: preview ' + (item ? 'listed' : 'not listed') +
-            (item ? ', selector=' + JSON.stringify(item.selector || null) + ', visible=' + String(item.visible) : ''));
-        } catch (e) { log('getTrimbimModels diagnostic unavailable: ' + (e?.message || e)); }
-        message('Test ' + (mode === 'source' ? 'A' : 'B') + ' loaded at +' + (mm/1000).toFixed(2) +
-          ' m. This is UNVERIFIED: inspect whether ONLY selected geometry is raised. If you see the whole model, remove the preview and try the other filter mode.', 'warn');
+        $('diagnosticStatus').textContent = 'Automatic filtering attempted. If you still see an unwanted elevated object, you can hide it individually here and send the technical log.';
+        message('v0.8: issued ' + inventory.unwanted.length + ' hide commands to the temporary copy at +' +
+          (mm/1000).toFixed(2) + ' m. Please VISUALLY CONFIRM only the orange selected road surface is raised.', 'warn');
       } catch (e) {
         await cleanup(id);
-        log('Removed preview after failure: ' + (e?.message || String(e)));
+        log('Temporary preview removed after error. Original model untouched. ' + (e?.message || String(e)));
         throw e;
       }
     }
@@ -319,26 +355,26 @@
       const sourceSelection = groups.filter(s => s?.modelId !== activePreview.id && s?.objectRuntimeIds?.length);
       const copySelection = groups.filter(s => s?.modelId === activePreview.id && s?.objectRuntimeIds?.length);
       const runtimeIds = [...new Set(copySelection.flatMap(s => s.objectRuntimeIds))];
-      log('v0.7 diagnostic: full selection=' + JSON.stringify(groups.map(s => ({modelId:s.modelId,objectRuntimeIds:s.objectRuntimeIds}))));
+      log('v0.8 diagnostic: full selection=' + JSON.stringify(groups.map(s => ({modelId:s.modelId,objectRuntimeIds:s.objectRuntimeIds}))));
       if (sourceSelection.length || runtimeIds.length !== 1) {
         throw new Error('Select exactly ONE unwanted object in the elevated copy, not the original model, then retry. Source objects were not modified.');
       }
       const testId = runtimeIds[0];
       if (!Number.isInteger(testId)) throw new Error('The selected object has no valid runtime ID.');
       const selector = specificSelector(activePreview.id, [testId]);
-      log('v0.7 single-object HIDE request: selector=' + JSON.stringify(selector) + ' state={"visible":false}');
+      log('v0.8 single-object HIDE request: selector=' + JSON.stringify(selector) + ' state={"visible":false}');
       const result = await api.viewer.setObjectState(selector, {visible: false});
       lastHidden = {modelId:activePreview.id, objectRuntimeId:testId};
-      log('v0.7 single-object HIDE resolved, return=' + String(result) + '. This does not prove it was hidden.');
-      $('diagnosticStatus').textContent = 'Hide command sent to temporary model object ' + testId + '. Did that ONE elevated object disappear? If not, the Workspace API call is being ignored for temporary objects. Send me the log and visual result.';
+      log('v0.8 single-object HIDE resolved, return=' + String(result) + '. This does not prove it was hidden.');
+      $('diagnosticStatus').textContent = 'Hide command sent to temporary model object ' + testId + '. Did that ONE elevated object disappear? If not, send the technical log and visual result.';
       message('Visibility test request sent to temporary object ' + testId + '. Verify visually whether it disappeared.', 'warn');
     }
     async function restoreLastHidden() {
       if (!lastHidden || !activePreview || lastHidden.modelId !== activePreview.id) throw new Error('No test-hidden object to restore.');
       const selector = specificSelector(lastHidden.modelId, [lastHidden.objectRuntimeId]);
-      log('v0.7 RESTORE request: selector=' + JSON.stringify(selector) + ' state={"visible":"reset"}');
+      log('v0.8 RESTORE request: selector=' + JSON.stringify(selector) + ' state={"visible":"reset"}');
       const result = await api.viewer.setObjectState(selector, {visible: 'reset'});
-      log('v0.7 RESTORE resolved, return=' + String(result) + '. Verify visually.');
+      log('v0.8 RESTORE resolved, return=' + String(result) + '. Verify visually.');
       $('diagnosticStatus').textContent = 'Restore request sent to temporary object ' + lastHidden.objectRuntimeId + '.';
       message('Restore request sent. Check the offset copy visually.', 'warn');
       lastHidden = null;
@@ -358,8 +394,11 @@
         placement: placementAt(activePreview.basePlacement, mm)
       });
       if (!successful(result)) throw new Error('Viewer did not accept the updated placement. ' + JSON.stringify(result));
+      // Some viewer builds may reapply model-wide visibility on placement updates.
+      // Explicitly repeat the known-working object-level hide operation.
+      await hideUnselectedInCopy(activePreview.id, activePreview.hiddenIds || []);
       activePreview.mm = mm;
-      message('Preview moved to +' + (mm / 1000).toFixed(2) + ' m. Inspect the roof/bridge from side and section views.', 'ok');
+      message('Preview moved to +' + (mm / 1000).toFixed(2) + ' m and visibility filter reapplied. Inspect visually.', 'warn');
     }
     $('capture').addEventListener('click', () => withBusy(captureSelection));
     $('inspect').addEventListener('click', () => withBusy(inspectViewerSelection));
@@ -378,7 +417,7 @@
           if (eventName === 'viewer.onSelectionChanged') log('Viewer selection changed. Click “Use current 3D selection” to recapture.');
         }, 30000);
         $('selectionStatus').textContent = 'Connected. Click the road surface in the viewer, then use the button above.';
-        log('Trimble Connect Workspace API connected (v0.7).');
+        log('Trimble Connect Workspace API connected (v0.8).');
         message('Connected to Trimble Connect. Ready to capture a selection.', 'ok');
       } catch (e) {
         $('selectionStatus').textContent = 'Connection failed.';
