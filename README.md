@@ -1,24 +1,26 @@
-# Road Clearance Preview v0.11 — direct 3D selection
+# Road Clearance v1.0 (build 12)
 
-Upload `index.html` and `manifest.json` to the **root** of your existing `jagkr1/road-clearance` GitHub repository, replacing the current files.
+A lightweight Trimble Connect 3D Viewer extension to temporarily display selected road surface objects at a positive vertical offset for visual clearance inspection.
 
-Trimble Connect manifest URL:
-`https://jagkr1.github.io/road-clearance/manifest.json?v=11`
+## Install / update
 
-## Change from v0.10
+1. In the existing `jagkr1/road-clearance` GitHub repository, replace root-level `index.html` and `manifest.json` with these files and commit.
+2. Ensure GitHub Pages is serving the `main` branch, root folder.
+3. Update the registered manifest URL in Trimble Connect to `https://jagkr1.github.io/road-clearance/manifest.json?v=12`.
+4. Fully reopen the 3D Viewer if an older version is cached. The technical log in **Advanced · Diagnostics** should say `v1.0`.
 
-- Removed **Use current 3D selection**. After selecting a road surface in the viewer, click **Show clearance surface** directly.
-- **Show clearance surface** reads the *current* viewer selection at click time, so it cannot use an outdated previously captured selection.
-- Shows a clear error when nothing is selected, when objects come from several source models, or when the selected object belongs to an existing offset preview.
-- **Update height** and **Remove preview** behave as before.
-- The tested v0.10 bounding-box inventory, original-model hierarchy protection, and temporary-copy object hiding logic are unchanged.
+## For users
 
-## Test
+1. Select road surface objects from one model in the 3D Viewer.
+2. Enter clearance height in centimetres.
+3. Click **Show clearance surface**.
+4. Use **Update height** to change the displayed offset, or **Remove preview** to clear it.
 
-1. Confirm the technical log says `v0.11`.
-2. Select the road surface in the original model.
-3. Enter a clearance height such as 450 cm and click **Show clearance surface**. There is no confirmation button.
-4. Verify that only the selected surface appears raised, while the original road model stays unchanged.
-5. Optionally change the height using **Update height** and then remove the preview.
+A small status line communicates readiness, errors and completion. Detailed object logs and manual diagnostic tools are hidden inside **Advanced · Diagnostics**.
 
-**Limitation:** The bounded runtime-ID scan can miss unusually sparse geometry IDs or geometry without bounding boxes. This preview is a visual design aid, not a certified clearance measurement. Visually inspect the result.
+## Scope and limitations
+
+- Temporary visualization only; the original model is not intentionally moved or hidden.
+- No certification of clearance or automated clash measurement.
+- Bounding-box-based ID scanning is bounded; unusually large/sparse models may require validation, and visually checking for extra raised geometry remains necessary.
+- This release changes user interface and messaging; object enumeration, copy creation, offset and visibility filtering remain based on the v0.11 implementation.

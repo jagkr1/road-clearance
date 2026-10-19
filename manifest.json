@@ -1,10 +1,10 @@
 {
-  "title": "Road Clearance Preview",
-  "description": "Temporary vertically elevated road-surface preview for visual tunnel and bridge clearance inspection.",
+  "title": "Road Clearance",
+  "description": "Visualize selected road surfaces at a temporary vertical clearance offset.",
   "extensionType": [
     "3dviewer"
   ],
   "type": "panel",
-  "url": "https://jagkr1.github.io/road-clearance/index.html?v=11",
+  "url": "https://jagkr1.github.io/road-clearance/index.html?v=12",
   "enabled": true
 }
