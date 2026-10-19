@@ -1,26 +1,24 @@
-# Road Clearance Preview v0.10 — bounding-box verified IDs (experimental)
+# Road Clearance Preview v0.11 — direct 3D selection
 
-Upload `index.html` and `manifest.json` into the root of the existing `jagkr1/road-clearance` GitHub repository.
+Upload `index.html` and `manifest.json` to the **root** of your existing `jagkr1/road-clearance` GitHub repository, replacing the current files.
 
-Trimble Connect manifest URL: `https://jagkr1.github.io/road-clearance/manifest.json?v=10`
+Trimble Connect manifest URL:
+`https://jagkr1.github.io/road-clearance/manifest.json?v=11`
 
-## Why v0.9 failed
-The `getObjects()` scan appeared to return every speculative runtime ID from 0 through 8191. That does **not** establish that the model has that many geometry objects. The previous scanner could not distinguish returned placeholders from valid geometry IDs. It stopped at a safety limit and removed the preview.
+## Change from v0.10
 
-## What v0.10 changes
-
-- Creates a temporary TrimBIM copy as before.
-- Queries `getObjectBoundingBoxes()` on the **original model** for the selected runtime ID(s) and a deliberately nonexistent sentinel ID. If the result fails validation, it stops without hiding anything.
-- Scans bounded ranges of runtime IDs, accepting only those with real, finite bounding boxes; never treats a mere ID echo as proof of geometry.
-- Excludes selected IDs plus known hierarchy ancestors/descendants from the hide list.
-- Sends `setObjectState` hide requests only to the **temporary copy's model ID**; does not modify the original model.
-- Removes the temporary copy if the probe fails, no unselected geometry is found or the bounded scan cannot be completed reliably.
-
-**Limitations:** Some model types may not return bounding boxes for surfaces. A valid-box-only scan can miss objects that have no bounding box or IDs outside the scanned region. This is a visualization prototype, not a guaranteed isolation, clash check, or minimum-clearance certification. Visually verify that no unwanted elevated geometry remains.
+- Removed **Use current 3D selection**. After selecting a road surface in the viewer, click **Show clearance surface** directly.
+- **Show clearance surface** reads the *current* viewer selection at click time, so it cannot use an outdated previously captured selection.
+- Shows a clear error when nothing is selected, when objects come from several source models, or when the selected object belongs to an existing offset preview.
+- **Update height** and **Remove preview** behave as before.
+- The tested v0.10 bounding-box inventory, original-model hierarchy protection, and temporary-copy object hiding logic are unchanged.
 
 ## Test
 
-1. Confirm the technical log says `v0.10`.
-2. Select road surface, capture selection and enter 450 cm.
-3. Click Show clearance surface.
-4. If only the raised surface remains, report success. If the preview disappears, send the log including `bbox probe`.
+1. Confirm the technical log says `v0.11`.
+2. Select the road surface in the original model.
+3. Enter a clearance height such as 450 cm and click **Show clearance surface**. There is no confirmation button.
+4. Verify that only the selected surface appears raised, while the original road model stays unchanged.
+5. Optionally change the height using **Update height** and then remove the preview.
+
+**Limitation:** The bounded runtime-ID scan can miss unusually sparse geometry IDs or geometry without bounding boxes. This preview is a visual design aid, not a certified clearance measurement. Visually inspect the result.

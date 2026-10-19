@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Road Clearance Preview v0.10</title>
+  <title>Road Clearance Preview v0.11</title>
   <style>
     :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
     * { box-sizing: border-box; }
@@ -40,7 +40,7 @@
 
   <div class="card">
     <p class="heading">1 · Select the road surface</p>
-    <button class="secondary full" id="capture" disabled>Use current 3D selection</button>
+    <p class="subtle">Select one or more road surface objects in the 3D viewer. Then click <strong>Show clearance surface</strong> below — no separate confirmation is needed.</p>
     <div class="status" id="selectionStatus">Connecting to Trimble Connect…</div>
   </div>
 
@@ -52,7 +52,7 @@
       <span class="units">cm</span>
     </div>
     <p class="subtle">Positive vertical Z offset. 450 cm = 4.50 m. The copy follows the original road geometry, not a constant absolute elevation.</p>
-    <p class="subtle">v0.10 validates geometry-bearing runtime IDs through object bounding boxes and hides only verified unselected objects <strong>in the temporary copy only</strong>. The original model is never hidden or moved.</p>
+    <p class="subtle">v0.11 validates geometry-bearing runtime IDs through object bounding boxes and hides only verified unselected objects <strong>in the temporary copy only</strong>. The original model is never hidden or moved.</p>
     <button class="primary full" id="show" disabled>Show clearance surface</button>
     <div class="actions">
       <button class="secondary" id="update" disabled>Update height</button>
@@ -68,7 +68,7 @@
   </div>
 
   <div class="card">
-    <p class="heading">3 · Optional single-object test (v0.10)</p>
+    <p class="heading">3 · Optional single-object test (v0.11)</p>
     <p class="subtle">Only needed if the automatic filter leaves unwanted geometry raised: select one unwanted elevated object and click the button below. This uses the hide command confirmed to work in v0.7.</p>
     <button class="secondary full" id="hideSelected" disabled>Hide selected object in offset copy (test)</button>
     <button class="secondary full" id="restoreHidden" disabled style="margin-top:8px">Restore last test-hidden object</button>
@@ -85,7 +85,6 @@
   <script>
     'use strict';
     let api = null;
-    let captured = null;
     let activePreview = null;
     let lastHidden = null;
     let busy = false;
@@ -104,9 +103,8 @@
       log(text);
     }
     function refreshButtons() {
-      $('capture').disabled = !api || busy;
       $('inspect').disabled = !api || busy;
-      $('show').disabled = !api || !captured || busy;
+      $('show').disabled = !api || busy;
       $('update').disabled = !api || !activePreview || busy;
       $('remove').disabled = !api || !activePreview || busy;
       $('hideSelected').disabled = !api || !activePreview || busy;
@@ -153,39 +151,46 @@
       await cleanup(id);
       message('Temporary clearance preview removed.', 'ok');
     }
-    async function captureSelection() {
+    // Read the selection only when Show is pressed. This avoids stale
+    // selections and removes the redundant capture/confirmation step.
+    async function readCurrentSelection() {
       const selection = await api.viewer.getSelection();
       const groups = (Array.isArray(selection) ? selection : []).filter(g =>
         typeof g?.modelId === 'string' && Array.isArray(g.objectRuntimeIds) && g.objectRuntimeIds.length > 0
       );
       const modelIds = [...new Set(groups.map(g => g.modelId))];
       if (!modelIds.length) {
-        captured = null;
-        $('selectionStatus').textContent = 'Nothing selected. Click a road surface in the 3D viewer, then try again.';
-        message('Select the road surface first.', 'warn');
-        return;
+        $('selectionStatus').textContent = 'Nothing selected. Select a road surface in the 3D viewer and click Show clearance surface.';
+        throw new Error('Select the road surface in the 3D viewer first.');
       }
       if (modelIds.length !== 1) {
-        captured = null;
-        $('selectionStatus').textContent = 'Multiple source models selected. Select road objects belonging to one model only.';
-        message('Please use a single source model per preview.', 'warn');
-        return;
+        $('selectionStatus').textContent = 'Multiple models selected. Please select road objects belonging to one source model only.';
+        throw new Error('Please use a single source model per preview.');
       }
       const sourceId = modelIds[0];
-      const runtimeIds = [...new Set(groups.flatMap(g => g.objectRuntimeIds))];
+      if (sourceId === activePreview?.id || sourceId.startsWith('road-clearance-preview-')) {
+        $('selectionStatus').textContent = 'You selected the elevated preview. Select the original road surface instead.';
+        throw new Error('Please select road objects in the original model, not the elevated preview.');
+      }
+      const runtimeIds = [...new Set(groups.flatMap(g => g.objectRuntimeIds))].filter(Number.isInteger);
+      if (!runtimeIds.length) {
+        $('selectionStatus').textContent = 'The selection has no valid runtime object IDs.';
+        throw new Error('Select an identifiable road surface object and try again.');
+      }
       let models = [];
       try { models = await api.viewer.getModels(); }
       catch (e) { log('Could not list models: ' + (e?.message || e)); }
       const sourceModel = models.find(m => m.versionId === sourceId || m.id === sourceId) || null;
-      captured = {
+      const current = {
         sourceId, runtimeIds,
         sourceModel,
         basePlacement: sourceModel?.placement || undefined
       };
       const name = sourceModel?.name || 'Selected model';
       $('selectionStatus').textContent = name + '\n' + runtimeIds.length + ' selected object(s) · one source model';
-      message('Road surface selection captured. Enter a height and show the preview.', 'ok');
-      log('Selection modelId=' + sourceId + ' object IDs=' + runtimeIds.slice(0, 30).join(',') + (runtimeIds.length > 30 ? '…' : ''));
+      log('Current selection read on Show: modelId=' + sourceId + ' object IDs=' +
+          runtimeIds.slice(0, 30).join(',') + (runtimeIds.length > 30 ? '…' : ''));
+      return current;
     }
     async function addFromReference(overlay, sourceIds) {
       for (const id of sourceIds) {
@@ -260,7 +265,7 @@
       let probe;
       try { probe = await api.viewer.getObjectBoundingBoxes(sourceId, probeIds); }
       catch (e) { throw new Error('Bounding-box query failed on the source model: ' + (e?.message || e)); }
-      log('v0.10 bbox probe: model=' + sourceId + ', asked=' + probeIds.join(',') +
+      log('v0.11 bbox probe: model=' + sourceId + ', asked=' + probeIds.join(',') +
           ', returned=' + JSON.stringify((Array.isArray(probe) ? probe : []).map(x=>({id:x?.id,box:x?.boundingBox}))).slice(0,1100));
       if (!Array.isArray(probe)) throw new Error('Bounding-box response is not an array. Aborting to protect the original model.');
       if (probe.some(o => o?.id === sentinel && isRealBox(o))) {
@@ -274,14 +279,14 @@
       try {
         const ancestors = await api.viewer.getHierarchyParents(sourceId, selectedIds, undefined, true);
         for (const o of Array.isArray(ancestors) ? ancestors : []) if (Number.isInteger(o?.id)) keep.add(o.id);
-        log('v0.10 protected hierarchy ancestors: ' + (keep.size-selectedIds.length));
-      } catch (e) { log('v0.10 ancestors unavailable: ' + (e?.message || e)); }
+        log('v0.11 protected hierarchy ancestors: ' + (keep.size-selectedIds.length));
+      } catch (e) { log('v0.11 ancestors unavailable: ' + (e?.message || e)); }
       try {
         const children = await api.viewer.getHierarchyChildren(sourceId, selectedIds, undefined, true);
         let count = 0;
         for (const o of Array.isArray(children) ? children : []) if (Number.isInteger(o?.id)) { keep.add(o.id); count++; }
-        log('v0.10 protected selected-object descendants: ' + count);
-      } catch (e) { log('v0.10 descendants unavailable: ' + (e?.message || e)); }
+        log('v0.11 protected selected-object descendants: ' + count);
+      } catch (e) { log('v0.11 descendants unavailable: ' + (e?.message || e)); }
 
       const valid = new Set(selectedIds);
       const batchSize = 128;
@@ -302,7 +307,7 @@
         if (found.length) { empty=0; lastHit=Math.max(lastHit,...found.map(o=>o.id)); }
         else empty++;
         if (requests<=3 || requests%8===0 || (lastScanned>=minScan && empty>=4)) {
-          log('v0.10 bbox scan: to='+lastScanned+', verified='+valid.size+
+          log('v0.11 bbox scan: to='+lastScanned+', verified='+valid.size+
             ', batch geometries='+found.length+', consecutive empty batches='+empty);
         }
         if (lastScanned >= minScan && empty>=4) break;
@@ -314,7 +319,7 @@
       if (!unwanted.length) {
         throw new Error('No verified unselected geometry was found. Check the bounding-box probe in the log.');
       }
-      log('v0.10 bbox inventory: source='+sourceId+', offsetCopy='+copyId+', verified='+valid.size+
+      log('v0.11 bbox inventory: source='+sourceId+', offsetCopy='+copyId+', verified='+valid.size+
           ', protected='+keep.size+', to hide='+unwanted.length+', range=0–'+lastScanned+
           ', highest geometry ID='+lastHit+', sample hide='+unwanted.slice(0,20).join(','));
       return {keepIds:[...keep], unwanted, lastScanned, foundCount:valid.size};
@@ -326,7 +331,7 @@
         const batch = ids.slice(i, i + batchSize);
         await api.viewer.setObjectState(specificSelector(copyId, batch), {visible:false});
         if (i === 0 || i + batchSize >= ids.length) {
-          log('v0.10 hide request: copy=' + copyId + ', processed=' + Math.min(i + batchSize, ids.length) + '/' + ids.length);
+          log('v0.11 hide request: copy=' + copyId + ', processed=' + Math.min(i + batchSize, ids.length) + '/' + ids.length);
         }
       }
     }
@@ -337,10 +342,9 @@
       return { modelObjectIds: [{ modelId: id, objectRuntimeIds: ids, recursive: false }] };
     }
     async function showPreview() {
-      if (!captured) throw new Error('First capture a road surface selection.');
       const mm = heightMm();
+      const current = await readCurrentSelection();
       await removePreview();
-      const current = captured;
       const id = 'road-clearance-preview-' + sessionSuffix + '-' + (++nextId);
       const selector = {modelObjectIds:[{modelId:id, objectRuntimeIds:current.runtimeIds, recursive:true}]};
       const overlay = {
@@ -354,7 +358,7 @@
       };
       const candidates = [...new Set([current.sourceId, current.sourceModel?.id, current.sourceModel?.versionId].filter(Boolean))];
       message('Creating temporary copy; validating geometry IDs with bounding boxes…');
-      log('v0.10 copy=' + id + ', source=' + current.sourceId + ', selected=' + current.runtimeIds.join(',') + ', offset=' + mm + ' mm');
+      log('v0.11 copy=' + id + ', source=' + current.sourceId + ', selected=' + current.runtimeIds.join(',') + ', offset=' + mm + ' mm');
       try {
         let result = await addFromReference(overlay, candidates);
         if (!result) result = await addFromLoadedFile(overlay, candidates);
@@ -369,7 +373,7 @@
         };
         lastHidden = null;
         $('diagnosticStatus').textContent = 'Automatic filtering attempted. If any unwanted elevated objects remain, use the single-object hide diagnostic and send the log.';
-        message('v0.10: ' + inventory.unwanted.length + ' verified geometry objects hidden in offset copy at +' +
+        message('v0.11: ' + inventory.unwanted.length + ' verified geometry objects hidden in offset copy at +' +
           (mm/1000).toFixed(2) + ' m. Scanned IDs 0–' + inventory.lastScanned +
           '. IMPORTANT: Visually verify that ONLY the selected road surface remains raised; sparse IDs or models outside the bounded scan could be missed.', 'warn');
       } catch (e) {
@@ -385,26 +389,26 @@
       const sourceSelection = groups.filter(s => s?.modelId !== activePreview.id && s?.objectRuntimeIds?.length);
       const copySelection = groups.filter(s => s?.modelId === activePreview.id && s?.objectRuntimeIds?.length);
       const runtimeIds = [...new Set(copySelection.flatMap(s => s.objectRuntimeIds))];
-      log('v0.10 diagnostic: full selection=' + JSON.stringify(groups.map(s => ({modelId:s.modelId,objectRuntimeIds:s.objectRuntimeIds}))));
+      log('v0.11 diagnostic: full selection=' + JSON.stringify(groups.map(s => ({modelId:s.modelId,objectRuntimeIds:s.objectRuntimeIds}))));
       if (sourceSelection.length || runtimeIds.length !== 1) {
         throw new Error('Select exactly ONE unwanted object in the elevated copy, not the original model, then retry. Source objects were not modified.');
       }
       const testId = runtimeIds[0];
       if (!Number.isInteger(testId)) throw new Error('The selected object has no valid runtime ID.');
       const selector = specificSelector(activePreview.id, [testId]);
-      log('v0.10 single-object HIDE request: selector=' + JSON.stringify(selector) + ' state={"visible":false}');
+      log('v0.11 single-object HIDE request: selector=' + JSON.stringify(selector) + ' state={"visible":false}');
       const result = await api.viewer.setObjectState(selector, {visible: false});
       lastHidden = {modelId:activePreview.id, objectRuntimeId:testId};
-      log('v0.10 single-object HIDE resolved, return=' + String(result) + '. This does not prove it was hidden.');
+      log('v0.11 single-object HIDE resolved, return=' + String(result) + '. This does not prove it was hidden.');
       $('diagnosticStatus').textContent = 'Hide command sent to temporary model object ' + testId + '. Did that ONE elevated object disappear? If not, send the technical log and visual result.';
       message('Visibility test request sent to temporary object ' + testId + '. Verify visually whether it disappeared.', 'warn');
     }
     async function restoreLastHidden() {
       if (!lastHidden || !activePreview || lastHidden.modelId !== activePreview.id) throw new Error('No test-hidden object to restore.');
       const selector = specificSelector(lastHidden.modelId, [lastHidden.objectRuntimeId]);
-      log('v0.10 RESTORE request: selector=' + JSON.stringify(selector) + ' state={"visible":"reset"}');
+      log('v0.11 RESTORE request: selector=' + JSON.stringify(selector) + ' state={"visible":"reset"}');
       const result = await api.viewer.setObjectState(selector, {visible: 'reset'});
-      log('v0.10 RESTORE resolved, return=' + String(result) + '. Verify visually.');
+      log('v0.11 RESTORE resolved, return=' + String(result) + '. Verify visually.');
       $('diagnosticStatus').textContent = 'Restore request sent to temporary object ' + lastHidden.objectRuntimeId + '.';
       message('Restore request sent. Check the offset copy visually.', 'warn');
       lastHidden = null;
@@ -430,7 +434,6 @@
       activePreview.mm = mm;
       message('Preview moved to +' + (mm / 1000).toFixed(2) + ' m and visibility filter reapplied. Inspect visually.', 'warn');
     }
-    $('capture').addEventListener('click', () => withBusy(captureSelection));
     $('inspect').addEventListener('click', () => withBusy(inspectViewerSelection));
     $('hideSelected').addEventListener('click', () => withBusy(hideSelectedCopyObject));
     $('restoreHidden').addEventListener('click', () => withBusy(restoreLastHidden));
@@ -444,11 +447,11 @@
       try {
         if (!window.TrimbleConnectWorkspace?.connect) throw new Error('Trimble Connect Workspace API was not available. Check that the SDK script loads in the browser.');
         api = await window.TrimbleConnectWorkspace.connect(window.parent, (eventName, data) => {
-          if (eventName === 'viewer.onSelectionChanged') log('Viewer selection changed. Click “Use current 3D selection” to recapture.');
+          if (eventName === 'viewer.onSelectionChanged') log('Viewer selection changed. Show will read the current 3D selection.');
         }, 30000);
-        $('selectionStatus').textContent = 'Connected. Click the road surface in the viewer, then use the button above.';
-        log('Trimble Connect Workspace API connected (v0.10).');
-        message('Connected to Trimble Connect. Ready to capture a selection.', 'ok');
+        $('selectionStatus').textContent = 'Connected. Select the road surface in the viewer, then click Show clearance surface.';
+        log('Trimble Connect Workspace API connected (v0.11).');
+        message('Connected to Trimble Connect. Select the road surface and click Show clearance surface.', 'ok');
       } catch (e) {
         $('selectionStatus').textContent = 'Connection failed.';
         message('Cannot connect to Trimble 3D Viewer: ' + (e?.message || e), 'error');
