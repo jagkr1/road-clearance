@@ -1,27 +1,26 @@
-# Road Clearance Preview v0.8 — automated visibility filtering (experimental)
+# Road Clearance Preview v0.9 — explicit-ID scan (experimental)
 
 ## Installation
 
-Replace `index.html` and `manifest.json` in the root of **jagkr1/road-clearance**. Commit, and wait for GitHub Pages deployment. Use the Trimble Connect capability URL:
+Upload `index.html` and `manifest.json` to the root of `jagkr1/road-clearance`. Set the Trimble Connect manifest URL to:
 
-`https://jagkr1.github.io/road-clearance/manifest.json?v=8`
+`https://jagkr1.github.io/road-clearance/manifest.json?v=9`
 
-Confirm the technical log says `connected (v0.8)` before testing.
+Check the technical log for `(v0.9)` before testing.
 
-## What changed
+## Reason for this version
 
-- v0.7 demonstrated that `setObjectState` with `visible:false` can hide a manually selected individual object in a temporary copy.
-- v0.5 could **not** enumerate a temporary copy through `getObjects`.
-- v0.8 gets the object IDs from the original road model **read-only**, creates the temporary copy, then explicitly hides all unselected IDs in the **temporary copy**. It protects the selected objects and their hierarchy relations where the hierarchy API is available.
-- Moving the preview reapplies the object-hiding mask.
-- On failure, the temporary model is removed.
+V0.8 queried `getObjects` using only the source model ID; it returned a model group with zero objects. V0.4 proved that `getObjects` can retrieve objects in a temporary model using **explicit runtime IDs**.
 
-## Test
+V0.9 creates the temporary copy, confirms it can retrieve the selected object(s) by ID, scans explicit runtime ID ranges in batches of 128, and hides unselected IDs **in the temporary copy only** with the successful v0.7 `setObjectState(..., {visible:false})` call. It protects selected objects, plus any available hierarchy ancestors/descendants.
 
-1. Select one road surface in the original model and click **Use current 3D selection**.
-2. Keep height at **450 cm** and click **Show clearance surface**.
-3. **Visually verify** that ONLY the selected road surface is raised and other objects remain in their original locations.
-4. If the viewer reports `Source-model enumeration returned zero objects`, send the full Technical log: this is a new, distinct API limitation; the extension will not create a misleading full copy.
-5. If extra elevated objects remain visible, send the log and indicate whether an unwanted object still responds to the optional single-object hide test.
+For performance, scanning stops after at least 1024 IDs and four consecutive empty 128-ID batches, or fails at the 8192-ID safety limit. These are heuristics: **the scan is not exhaustive**, so users must visually verify the elevated copy contains ONLY the selected surface. Any failure during scanning removes the temporary model and does not modify original visibility.
 
-This extension is a **visual aid only**, not a certified clearance analysis. It makes no permanent changes to the original model or properties. The selected model and the temporary copy are different IDs, and visibility changes are directed only at the temporary model.
+## Testing
+
+1. Select road object 43 (or another road surface) and capture selection.
+2. Set 450 cm and click Show clearance surface.
+3. Verify original model is unchanged and only selected geometry appears elevated.
+4. If an error appears or extra geometry is raised, send the technical log; we need scan counts and highest returned runtime ID.
+
+The preview is not a geometric clash measurement or certified height check.
