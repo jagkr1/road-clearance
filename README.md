@@ -1,26 +1,26 @@
-# Road Clearance Preview v0.9 — explicit-ID scan (experimental)
+# Road Clearance Preview v0.10 — bounding-box verified IDs (experimental)
 
-## Installation
+Upload `index.html` and `manifest.json` into the root of the existing `jagkr1/road-clearance` GitHub repository.
 
-Upload `index.html` and `manifest.json` to the root of `jagkr1/road-clearance`. Set the Trimble Connect manifest URL to:
+Trimble Connect manifest URL: `https://jagkr1.github.io/road-clearance/manifest.json?v=10`
 
-`https://jagkr1.github.io/road-clearance/manifest.json?v=9`
+## Why v0.9 failed
+The `getObjects()` scan appeared to return every speculative runtime ID from 0 through 8191. That does **not** establish that the model has that many geometry objects. The previous scanner could not distinguish returned placeholders from valid geometry IDs. It stopped at a safety limit and removed the preview.
 
-Check the technical log for `(v0.9)` before testing.
+## What v0.10 changes
 
-## Reason for this version
+- Creates a temporary TrimBIM copy as before.
+- Queries `getObjectBoundingBoxes()` on the **original model** for the selected runtime ID(s) and a deliberately nonexistent sentinel ID. If the result fails validation, it stops without hiding anything.
+- Scans bounded ranges of runtime IDs, accepting only those with real, finite bounding boxes; never treats a mere ID echo as proof of geometry.
+- Excludes selected IDs plus known hierarchy ancestors/descendants from the hide list.
+- Sends `setObjectState` hide requests only to the **temporary copy's model ID**; does not modify the original model.
+- Removes the temporary copy if the probe fails, no unselected geometry is found or the bounded scan cannot be completed reliably.
 
-V0.8 queried `getObjects` using only the source model ID; it returned a model group with zero objects. V0.4 proved that `getObjects` can retrieve objects in a temporary model using **explicit runtime IDs**.
+**Limitations:** Some model types may not return bounding boxes for surfaces. A valid-box-only scan can miss objects that have no bounding box or IDs outside the scanned region. This is a visualization prototype, not a guaranteed isolation, clash check, or minimum-clearance certification. Visually verify that no unwanted elevated geometry remains.
 
-V0.9 creates the temporary copy, confirms it can retrieve the selected object(s) by ID, scans explicit runtime ID ranges in batches of 128, and hides unselected IDs **in the temporary copy only** with the successful v0.7 `setObjectState(..., {visible:false})` call. It protects selected objects, plus any available hierarchy ancestors/descendants.
+## Test
 
-For performance, scanning stops after at least 1024 IDs and four consecutive empty 128-ID batches, or fails at the 8192-ID safety limit. These are heuristics: **the scan is not exhaustive**, so users must visually verify the elevated copy contains ONLY the selected surface. Any failure during scanning removes the temporary model and does not modify original visibility.
-
-## Testing
-
-1. Select road object 43 (or another road surface) and capture selection.
-2. Set 450 cm and click Show clearance surface.
-3. Verify original model is unchanged and only selected geometry appears elevated.
-4. If an error appears or extra geometry is raised, send the technical log; we need scan counts and highest returned runtime ID.
-
-The preview is not a geometric clash measurement or certified height check.
+1. Confirm the technical log says `v0.10`.
+2. Select road surface, capture selection and enter 450 cm.
+3. Click Show clearance surface.
+4. If only the raised surface remains, report success. If the preview disappears, send the log including `bbox probe`.

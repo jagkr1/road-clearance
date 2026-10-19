@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Road Clearance Preview v0.9</title>
+  <title>Road Clearance Preview v0.10</title>
   <style>
     :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
     * { box-sizing: border-box; }
@@ -52,7 +52,7 @@
       <span class="units">cm</span>
     </div>
     <p class="subtle">Positive vertical Z offset. 450 cm = 4.50 m. The copy follows the original road geometry, not a constant absolute elevation.</p>
-    <p class="subtle">v0.9 finds the road model’s object IDs and hides all unselected objects <strong>in the temporary copy only</strong>. The original model is never hidden or moved.</p>
+    <p class="subtle">v0.10 validates geometry-bearing runtime IDs through object bounding boxes and hides only verified unselected objects <strong>in the temporary copy only</strong>. The original model is never hidden or moved.</p>
     <button class="primary full" id="show" disabled>Show clearance surface</button>
     <div class="actions">
       <button class="secondary" id="update" disabled>Update height</button>
@@ -68,7 +68,7 @@
   </div>
 
   <div class="card">
-    <p class="heading">3 · Optional single-object test (v0.9)</p>
+    <p class="heading">3 · Optional single-object test (v0.10)</p>
     <p class="subtle">Only needed if the automatic filter leaves unwanted geometry raised: select one unwanted elevated object and click the button below. This uses the hide command confirmed to work in v0.7.</p>
     <button class="secondary full" id="hideSelected" disabled>Hide selected object in offset copy (test)</button>
     <button class="secondary full" id="restoreHidden" disabled style="margin-top:8px">Restore last test-hidden object</button>
@@ -240,73 +240,84 @@
         .flatMap(g => g.objects)
         .filter(o => Number.isInteger(o?.id));
     }
-    // In v0.5 and v0.9, getObjects({modelObjectIds:[{modelId}]})
-    // returned an empty group even though objects were visibly present.
-    // v0.4 proved that getObjects WITH EXPLICIT runtime IDs can find a
-    // selected object in the TEMPORARY model. v0.9 uses that known path.
-    // This is a bounded scan, not an API guarantee of exhaustive coverage.
+    // v0.9 used getObjects with speculative IDs, interpreting the 128
+    // returned IDs as 128 real objects on EVERY batch up to 8192.  A return
+    // object can be a placeholder.  Bounding boxes are independent evidence
+    // of actual geometry and may be used ONLY if the sentinel check passes.
+    function isRealBox(o) {
+      if (!Number.isInteger(o?.id)) return false;
+      const b = o?.boundingBox;
+      if (!b || !b.min || !b.max) return false;
+      return ['x', 'y', 'z'].every(k =>
+        Number.isFinite(b.min[k]) && Number.isFinite(b.max[k]) && b.max[k] >= b.min[k]);
+    }
     async function enumerateTemporary(copyId, current) {
-      if (!copyId.startsWith('road-clearance-preview-')) throw new Error('Invalid preview ID.');
+      if (!copyId.startsWith('road-clearance-preview-')) throw new Error('Invalid temporary preview ID.');
       const selectedIds = [...new Set(current.runtimeIds.filter(Number.isInteger))];
-      const check = await api.viewer.getObjects(specificSelector(copyId, selectedIds));
-      const matches = objectsInModel(check, copyId).map(o => o.id);
-      log('v0.9 selected-object probe: asked=' + selectedIds.join(',') +
-          ', returned=' + matches.join(',') + ', group summaries=' +
-          JSON.stringify((Array.isArray(check) ? check : []).map(g => ({modelId:g.modelId, count:g.objects?.length || 0}))));
-      if (selectedIds.some(id => !matches.includes(id))) {
-        throw new Error('The temporary model could not identify all selected runtime IDs explicitly. No object visibility was changed.');
+      const sourceId = current.sourceId;
+      const sentinel = 2000000000;
+      const probeIds = [...new Set([...selectedIds, sentinel])];
+      let probe;
+      try { probe = await api.viewer.getObjectBoundingBoxes(sourceId, probeIds); }
+      catch (e) { throw new Error('Bounding-box query failed on the source model: ' + (e?.message || e)); }
+      log('v0.10 bbox probe: model=' + sourceId + ', asked=' + probeIds.join(',') +
+          ', returned=' + JSON.stringify((Array.isArray(probe) ? probe : []).map(x=>({id:x?.id,box:x?.boundingBox}))).slice(0,1100));
+      if (!Array.isArray(probe)) throw new Error('Bounding-box response is not an array. Aborting to protect the original model.');
+      if (probe.some(o => o?.id === sentinel && isRealBox(o))) {
+        throw new Error('The viewer returned real-looking geometry for a nonexistent sentinel ID. Cannot trust scanning; no filtering performed.');
       }
-
+      const validatedSelection = new Set(probe.filter(isRealBox).map(x=>x.id));
+      if (selectedIds.some(id => !validatedSelection.has(id))) {
+        throw new Error('The selected object has no verifiable bounding box in the source model. Bounding-box scanning cannot be used safely on this model. Technical log contains the probe.');
+      }
       const keep = new Set(selectedIds);
-      // Ancestors and descendants are retained to avoid inadvertently hiding
-      // the selected surface through its spatial/object hierarchy.
-      for (const [name, method] of [
-        ['ancestors', 'getHierarchyParents'], ['descendants', 'getHierarchyChildren']
-      ]) {
-        try {
-          const result = await api.viewer[method](current.sourceId, selectedIds, undefined, true);
-          let protectedCount = 0;
-          for (const obj of (Array.isArray(result) ? result : [])) {
-            if (Number.isInteger(obj?.id)) { keep.add(obj.id); protectedCount++; }
-          }
-          log('v0.9 protected ' + name + ': ' + protectedCount);
-        } catch (e) { log('v0.9 hierarchy ' + name + ' unavailable: ' + (e?.message || e)); }
-      }
+      try {
+        const ancestors = await api.viewer.getHierarchyParents(sourceId, selectedIds, undefined, true);
+        for (const o of Array.isArray(ancestors) ? ancestors : []) if (Number.isInteger(o?.id)) keep.add(o.id);
+        log('v0.10 protected hierarchy ancestors: ' + (keep.size-selectedIds.length));
+      } catch (e) { log('v0.10 ancestors unavailable: ' + (e?.message || e)); }
+      try {
+        const children = await api.viewer.getHierarchyChildren(sourceId, selectedIds, undefined, true);
+        let count = 0;
+        for (const o of Array.isArray(children) ? children : []) if (Number.isInteger(o?.id)) { keep.add(o.id); count++; }
+        log('v0.10 protected selected-object descendants: ' + count);
+      } catch (e) { log('v0.10 descendants unavailable: ' + (e?.message || e)); }
 
-      const found = new Set(selectedIds);
-      // Scan the temporary copy by EXPLICIT IDs, never a wildcard model query.
-      // A few consecutive empty batches usually signal the end of an ordinary
-      // contiguous runtime-ID range. This is an inference, not a guarantee.
+      const valid = new Set(selectedIds);
       const batchSize = 128;
       const hardLimit = 8192;
       const minScan = Math.max(1024, Math.ceil((Math.max(...selectedIds) + 1) / batchSize) * batchSize + 512);
-      if (minScan > hardLimit) throw new Error('Selected IDs exceed the safe scan range.');
+      if (minScan > hardLimit) throw new Error('Selected object ID exceeds the bounded scan range.');
       let empty = 0, lastScanned = -1, lastHit = -1, requests = 0;
       for (let start = 0; start < hardLimit; start += batchSize) {
         const ids = Array.from({length:batchSize}, (_, i) => start + i);
-        let result;
-        try { result = await api.viewer.getObjects(specificSelector(copyId, ids)); }
-        catch(e) { throw new Error('Runtime-ID scan failed for ' + start + '-' + (start+batchSize-1) + ': ' + (e?.message || e)); }
-        const rows = objectsInModel(result, copyId);
-        for (const o of rows) if (Number.isInteger(o.id)) found.add(o.id);
-        lastScanned = start + batchSize - 1;
+        let response;
+        try { response = await api.viewer.getObjectBoundingBoxes(sourceId, ids); }
+        catch(e) { throw new Error('Bounding-box batch query failed for '+start+'–'+(start+batchSize-1)+': '+(e?.message||e)); }
+        if (!Array.isArray(response)) throw new Error('Unexpected bounding-box batch response.');
+        const found = response.filter(o => isRealBox(o) && ids.includes(o.id));
+        for (const o of found) valid.add(o.id);
+        lastScanned = start+batchSize-1;
         requests++;
-        if (rows.length) { empty = 0; lastHit = Math.max(lastHit, ...rows.map(x=>x.id)); }
+        if (found.length) { empty=0; lastHit=Math.max(lastHit,...found.map(o=>o.id)); }
         else empty++;
-        if (requests <= 3 || requests % 8 === 0 || (lastScanned >= minScan && empty >= 4)) {
-          log('v0.9 scan: to=' + lastScanned + ', found=' + found.size + ', recent=' + rows.length + ', consecutive empty batches=' + empty);
+        if (requests<=3 || requests%8===0 || (lastScanned>=minScan && empty>=4)) {
+          log('v0.10 bbox scan: to='+lastScanned+', verified='+valid.size+
+            ', batch geometries='+found.length+', consecutive empty batches='+empty);
         }
-        if (lastScanned >= minScan && empty >= 4) break;
+        if (lastScanned >= minScan && empty>=4) break;
       }
-      if (lastScanned === hardLimit - 1 && empty < 4) {
-        throw new Error('Runtime-ID scan hit the safety limit (' + hardLimit + '). The model may be too large for this method.');
+      if (lastScanned === hardLimit-1 && empty<4) {
+        throw new Error('Verified geometry continues through runtime ID 8191. This model may be larger than our bounded scan. Refusing an incomplete automatic filter.');
       }
-      const unwanted = [...found].filter(id => !keep.has(id)).sort((a,b)=>a-b);
-      if (!unwanted.length) throw new Error('No unselected IDs were found. This is inconsistent with your visible duplicate; no visibility was changed.');
-      log('v0.9 scan result: copy=' + copyId + ', scanned=0..' + lastScanned +
-          ', highest returned ID=' + lastHit + ', found=' + found.size +
-          ', protected=' + keep.size + ', to hide=' + unwanted.length + ', sample=' + unwanted.slice(0,16).join(','));
-      return {keepIds:[...keep], unwanted, lastScanned, foundCount:found.size};
+      const unwanted = [...valid].filter(id=>!keep.has(id)).sort((a,b)=>a-b);
+      if (!unwanted.length) {
+        throw new Error('No verified unselected geometry was found. Check the bounding-box probe in the log.');
+      }
+      log('v0.10 bbox inventory: source='+sourceId+', offsetCopy='+copyId+', verified='+valid.size+
+          ', protected='+keep.size+', to hide='+unwanted.length+', range=0–'+lastScanned+
+          ', highest geometry ID='+lastHit+', sample hide='+unwanted.slice(0,20).join(','));
+      return {keepIds:[...keep], unwanted, lastScanned, foundCount:valid.size};
     }
     async function hideUnselectedInCopy(copyId, ids) {
       if (!copyId.startsWith('road-clearance-preview-' )) throw new Error('Refusing to hide: invalid temporary model ID.');
@@ -315,7 +326,7 @@
         const batch = ids.slice(i, i + batchSize);
         await api.viewer.setObjectState(specificSelector(copyId, batch), {visible:false});
         if (i === 0 || i + batchSize >= ids.length) {
-          log('v0.9 hide request: copy=' + copyId + ', processed=' + Math.min(i + batchSize, ids.length) + '/' + ids.length);
+          log('v0.10 hide request: copy=' + copyId + ', processed=' + Math.min(i + batchSize, ids.length) + '/' + ids.length);
         }
       }
     }
@@ -342,15 +353,15 @@
         color: {r:255, g:88, b:30, a:170}
       };
       const candidates = [...new Set([current.sourceId, current.sourceModel?.id, current.sourceModel?.versionId].filter(Boolean))];
-      message('Creating temporary copy to scan its explicit runtime IDs…');
-      log('v0.9 copy=' + id + ', source=' + current.sourceId + ', selected=' + current.runtimeIds.join(',') + ', offset=' + mm + ' mm');
+      message('Creating temporary copy; validating geometry IDs with bounding boxes…');
+      log('v0.10 copy=' + id + ', source=' + current.sourceId + ', selected=' + current.runtimeIds.join(',') + ', offset=' + mm + ' mm');
       try {
         let result = await addFromReference(overlay, candidates);
         if (!result) result = await addFromLoadedFile(overlay, candidates);
         if (!result) throw new Error('Trimble could not create the temporary copy. See technical log.');
-        log('Temporary copy added using ' + result.method + '. Scanning only modelId=' + id);
+        log('Temporary copy added using ' + result.method + '. Checking original model geometry for IDs; copy modelId=' + id);
         const inventory = await enumerateTemporary(id, current);
-        message('Found ' + inventory.foundCount + ' runtime IDs; hiding ' + inventory.unwanted.length + ' unselected objects in temporary copy…');
+        message('Found ' + inventory.foundCount + ' verified geometry IDs; hiding ' + inventory.unwanted.length + ' unselected objects in temporary copy…');
         await hideUnselectedInCopy(id, inventory.unwanted);
         activePreview = {
           id, basePlacement: current.basePlacement, sourceId: current.sourceId,
@@ -358,9 +369,9 @@
         };
         lastHidden = null;
         $('diagnosticStatus').textContent = 'Automatic filtering attempted. If any unwanted elevated objects remain, use the single-object hide diagnostic and send the log.';
-        message('v0.9: ' + inventory.unwanted.length + ' temporary objects hidden at +' +
+        message('v0.10: ' + inventory.unwanted.length + ' verified geometry objects hidden in offset copy at +' +
           (mm/1000).toFixed(2) + ' m. Scanned IDs 0–' + inventory.lastScanned +
-          '. IMPORTANT: Visually verify that ONLY the selected road surface remains raised; the scan is not mathematically exhaustive.', 'warn');
+          '. IMPORTANT: Visually verify that ONLY the selected road surface remains raised; sparse IDs or models outside the bounded scan could be missed.', 'warn');
       } catch (e) {
         await cleanup(id);
         log('Temporary preview removed after error. Original model untouched. ' + (e?.message || String(e)));
@@ -374,26 +385,26 @@
       const sourceSelection = groups.filter(s => s?.modelId !== activePreview.id && s?.objectRuntimeIds?.length);
       const copySelection = groups.filter(s => s?.modelId === activePreview.id && s?.objectRuntimeIds?.length);
       const runtimeIds = [...new Set(copySelection.flatMap(s => s.objectRuntimeIds))];
-      log('v0.9 diagnostic: full selection=' + JSON.stringify(groups.map(s => ({modelId:s.modelId,objectRuntimeIds:s.objectRuntimeIds}))));
+      log('v0.10 diagnostic: full selection=' + JSON.stringify(groups.map(s => ({modelId:s.modelId,objectRuntimeIds:s.objectRuntimeIds}))));
       if (sourceSelection.length || runtimeIds.length !== 1) {
         throw new Error('Select exactly ONE unwanted object in the elevated copy, not the original model, then retry. Source objects were not modified.');
       }
       const testId = runtimeIds[0];
       if (!Number.isInteger(testId)) throw new Error('The selected object has no valid runtime ID.');
       const selector = specificSelector(activePreview.id, [testId]);
-      log('v0.9 single-object HIDE request: selector=' + JSON.stringify(selector) + ' state={"visible":false}');
+      log('v0.10 single-object HIDE request: selector=' + JSON.stringify(selector) + ' state={"visible":false}');
       const result = await api.viewer.setObjectState(selector, {visible: false});
       lastHidden = {modelId:activePreview.id, objectRuntimeId:testId};
-      log('v0.9 single-object HIDE resolved, return=' + String(result) + '. This does not prove it was hidden.');
+      log('v0.10 single-object HIDE resolved, return=' + String(result) + '. This does not prove it was hidden.');
       $('diagnosticStatus').textContent = 'Hide command sent to temporary model object ' + testId + '. Did that ONE elevated object disappear? If not, send the technical log and visual result.';
       message('Visibility test request sent to temporary object ' + testId + '. Verify visually whether it disappeared.', 'warn');
     }
     async function restoreLastHidden() {
       if (!lastHidden || !activePreview || lastHidden.modelId !== activePreview.id) throw new Error('No test-hidden object to restore.');
       const selector = specificSelector(lastHidden.modelId, [lastHidden.objectRuntimeId]);
-      log('v0.9 RESTORE request: selector=' + JSON.stringify(selector) + ' state={"visible":"reset"}');
+      log('v0.10 RESTORE request: selector=' + JSON.stringify(selector) + ' state={"visible":"reset"}');
       const result = await api.viewer.setObjectState(selector, {visible: 'reset'});
-      log('v0.9 RESTORE resolved, return=' + String(result) + '. Verify visually.');
+      log('v0.10 RESTORE resolved, return=' + String(result) + '. Verify visually.');
       $('diagnosticStatus').textContent = 'Restore request sent to temporary object ' + lastHidden.objectRuntimeId + '.';
       message('Restore request sent. Check the offset copy visually.', 'warn');
       lastHidden = null;
@@ -436,7 +447,7 @@
           if (eventName === 'viewer.onSelectionChanged') log('Viewer selection changed. Click “Use current 3D selection” to recapture.');
         }, 30000);
         $('selectionStatus').textContent = 'Connected. Click the road surface in the viewer, then use the button above.';
-        log('Trimble Connect Workspace API connected (v0.9).');
+        log('Trimble Connect Workspace API connected (v0.10).');
         message('Connected to Trimble Connect. Ready to capture a selection.', 'ok');
       } catch (e) {
         $('selectionStatus').textContent = 'Connection failed.';
